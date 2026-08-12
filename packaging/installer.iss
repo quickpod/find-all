@@ -1,8 +1,9 @@
 ; Inno Setup — FindAll. Signed single-file installer, compiled in CI.
 #define AppName "FindAll"
-#define AppVersion "1.0.1"
+#define AppVersion "1.0.2"
 
 [Setup]
+AppMutex=QuickOpen.FindAll
 AppId={{51A0F001-0007-4E5B-8C71-9B0E2F3A0007}
 AppName={#AppName}
 AppVersion={#AppVersion}
@@ -23,7 +24,7 @@ WizardSmallImageFile=branding\wizard-small.bmp
 AppCopyright=Apache-2.0. 100%% AI-built, published on QuickOpen (quickopen.ai).
 VersionInfoCompany=QuickOpen
 VersionInfoProductName=FindAll
-VersionInfoVersion=1.0.1.0
+VersionInfoVersion=1.0.2.0
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -57,13 +58,3 @@ Filename: "{app}\FindAll.exe"; Description: "Launch FindAll now"; Flags: nowait 
 [UninstallDelete]
 Type: filesandordirs; Name: "{localappdata}\FindAll"
 
-[Code]
-procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
-var ResultCode: Integer;
-begin
-  if CurUninstallStep = usUninstall then
-    if MsgBox('Also remove the QuickOpen Root CA from the Trusted Root store?' + #13#10 +
-              'Choose No if you use other QuickOpen apps that rely on it.',
-              mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
-      Exec('certutil.exe', '-delstore -user Root "QuickOpen Root CA"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-end;
