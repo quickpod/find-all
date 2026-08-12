@@ -20,8 +20,10 @@ jobs:
           pyinstaller --onefile --windowed --name FindAll
           --icon find-all.ico
           --version-file packaging/version.txt
+          --hidden-import findall.__main__
           --add-data "find-all.ico;."
           --collect-submodules whoosh
+          --collect-all customtkinter
           find_all_app.py
       - name: Stage installer inputs
         shell: pwsh
