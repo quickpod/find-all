@@ -1,0 +1,13 @@
+{
+  "slug": "find-all",
+  "name": "FindAll",
+  "tagline": "Instant full-text and filename search across your folders, with previews.",
+  "categorySlug": "search-indexing",
+  "license": "Apache-2.0",
+  "description": "Index chosen folders once, then search filenames and file contents instantly with fuzzy matching, filters (type/size/date) and live previews. Incremental re-indexing keeps it current. An 'Everything'-style launcher that also searches inside documents \u2014 fully local.",
+  "aiStack": "Python (tkinter + CLI), Whoosh",
+  "platforms": [
+    "windows"
+  ],
+  "buildEntry": "find_all_app.py"
+}

@@ -1,0 +1,2 @@
+# FindAll runtime deps — permissive/weak-copyleft only, no AGPL/proprietary.
+Whoosh>=2.7
