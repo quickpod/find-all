@@ -1,6 +1,6 @@
 ; Inno Setup — FindAll. Signed single-file installer, compiled in CI.
 #define AppName "FindAll"
-#define AppVersion "1.0.0"
+#define AppVersion "1.0.1"
 
 [Setup]
 AppId={{51A0F001-0007-4E5B-8C71-9B0E2F3A0007}
@@ -23,7 +23,7 @@ WizardSmallImageFile=branding\wizard-small.bmp
 AppCopyright=Apache-2.0. 100%% AI-built, published on QuickOpen (quickopen.ai).
 VersionInfoCompany=QuickOpen
 VersionInfoProductName=FindAll
-VersionInfoVersion=1.0.0.0
+VersionInfoVersion=1.0.1.0
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesInstallIn64BitMode=x64compatible
