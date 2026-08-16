@@ -34,7 +34,7 @@ import threading
 # fails.
 
 APP_NAME = "FindAll"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 WINDOW_TITLE = "FindAll — by QuickOpen (quickopen.ai)"
 PROJECT_URL = "https://quickopen.ai"
 ACCENT = "#5b86f7"      # publish/specs/find-all.json "accent": [91, 134, 247]
@@ -81,6 +81,41 @@ def fmt_time(ts):
         return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
     except Exception:
         return ""
+
+
+# Everything-style type filters: chip id -> extensions
+KIND_EXTS = {
+    "docs": {"txt", "md", "rst", "pdf", "doc", "docx", "odt", "rtf", "csv",
+             "xls", "xlsx", "ods", "ppt", "pptx", "odp", "log", "json",
+             "xml", "yaml", "yml", "ini", "html", "htm", "tex", "epub"},
+    "images": {"png", "jpg", "jpeg", "gif", "bmp", "webp", "tif", "tiff",
+               "svg", "ico", "heic", "raw", "psd", "xcf"},
+    "audio": {"mp3", "wav", "flac", "ogg", "m4a", "aac", "wma", "opus",
+              "mid", "midi"},
+    "video": {"mp4", "mkv", "avi", "mov", "webm", "wmv", "m4v", "mpg",
+              "mpeg", "3gp", "flv"},
+}
+FILTER_CHIPS = ("All", "Documents", "Images", "Audio", "Video", "Other")
+_CHIP_KIND = {"Documents": "docs", "Images": "images", "Audio": "audio",
+              "Video": "video"}
+
+
+def file_kind(name):
+    """Classify a filename by extension: docs|images|audio|video|other."""
+    ext = os.path.splitext(name or "")[1].lstrip(".").lower()
+    for kind, exts in KIND_EXTS.items():
+        if ext in exts:
+            return kind
+    return "other"
+
+
+def passes_chip(name, chip):
+    """Does a result filename pass the selected type-filter chip?"""
+    if chip in (None, "", "All"):
+        return True
+    if chip == "Other":
+        return file_kind(name) == "other"
+    return file_kind(name) == _CHIP_KIND.get(chip)
 
 
 def open_in_file_manager(path):
@@ -145,20 +180,25 @@ def build_app():
                 on_theme_change=guiconfig.set_theme,
                 size=(1080, 680), min_size=(880, 540))
 
-            self._results = []          # current result dicts, row-indexed
+            self._results = []          # raw result dicts from the last search
+            self._rows = []             # results after the type-filter chip
             self._search_after = None   # debounce handle
             self._search_seq = 0        # ignore stale threaded results
             self._img_refs_gui = []
+            self._chip = "All"
+            self._active_source = ""
+            self._src_rows = {}
 
             self._set_icon()
             self._build_menu()
             self.add_section("search", "Search", "⚲", self._build_search)
             self.add_section("sources", "Sources", "▤", self._build_sources)
             self.add_section("about", "About", "◉", self._build_about)
+            self._build_source_sidebar()
             self.show("search")
             self.set_status("Ready")
             self.protocol("WM_DELETE_WINDOW", self.destroy)
-            self.after(80, lambda: self.search_entry.focus_set())
+            self.after(80, self._focus_search)
 
         # ---- assets / icon
         def _set_icon(self):
@@ -178,17 +218,27 @@ def build_app():
             except Exception:
                 pass  # icon is cosmetic; never block launch
 
-        # ---- menu (native menus stay; theme lives in the sidebar toggle too)
+        # ---- menu (☰ dropdown) + keyboard baseline (§7/§9)
         def _build_menu(self):
             bar = tk.Menu(self)
             filem = tk.Menu(bar, tearoff=0)
+            filem.add_command(label="Add source…", accelerator="Ctrl+N",
+                              command=lambda: self.show("sources"))
             filem.add_command(label="Manage sources…",
                               command=lambda: self.show("sources"))
             filem.add_separator()
+            filem.add_command(label="Settings…", accelerator="Ctrl+,",
+                              command=self._open_settings)
             filem.add_command(label="Exit", command=self.destroy)
             bar.add_cascade(label="File", menu=filem)
 
             viewm = tk.Menu(bar, tearoff=0)
+            viewm.add_command(label="Focus search", accelerator="Ctrl+F",
+                              command=self._focus_search)
+            viewm.add_command(label="Search again", accelerator="F5",
+                              command=self._trigger_search)
+            viewm.add_command(label="Toggle sidebar", accelerator="Ctrl+\\",
+                              command=self.toggle_sidebar)
             viewm.add_command(
                 label="Toggle dark mode",
                 command=lambda: self.set_theme(
@@ -202,25 +252,136 @@ def build_app():
             bar.add_cascade(label="Help", menu=helpm)
             self.configure(menu=bar)
 
+            self.bind_all("<Control-f>",
+                          lambda e: (self._focus_search(), "break")[1])
+            self.bind_all("<Control-n>",
+                          lambda e: (self.show("sources"), "break")[1])
+            self.bind_all("<Control-comma>",
+                          lambda e: (self._open_settings(), "break")[1])
+            self.bind_all("<F5>",
+                          lambda e: (self._trigger_search(), "break")[1])
+
+        def _focus_search(self):
+            try:
+                self.show("search")
+                self.search_entry.focus_set()
+            except Exception:
+                pass
+
+        # ---- Settings dialog (Ctrl+,)
+        def _open_settings(self):
+            dlg = aura.Dialog(self, title="Settings", size=(460, 240))
+            aura.SectionLabel(dlg.body, "Appearance").pack(anchor="w",
+                                                           pady=(0, 2))
+            trow = ctk.CTkFrame(dlg.body, fg_color="transparent")
+            trow.pack(anchor="w", pady=(4, 0))
+            aura.Caption(trow, "Theme").pack(side="left", padx=(0, 10))
+            cur = guiconfig.get_theme()
+            th = aura.AuraOption(trow, values=["System", "Light", "Dark"],
+                                 width=110, height=30,
+                                 command=self._set_theme_pref)
+            th.set(cur.capitalize() if cur in ("light", "dark") else "System")
+            th.pack(side="left")
+            aura.Caption(dlg.body,
+                         "System follows the OS Aura Dark/Light live.").pack(
+                anchor="w", pady=(6, 0))
+            aura.Caption(dlg.body,
+                         "Indexes live in your home folder — nothing is "
+                         "ever uploaded.").pack(anchor="w", pady=(14, 0))
+            dlg.add_button("Close")
+
+        def _set_theme_pref(self, choice):
+            pref = str(choice).lower()
+            if pref == "system":
+                guiconfig.set_theme("system")
+                self._follow_system = True
+                if getattr(self, "_sys_listener", None) is None:
+                    self._start_system_listener()
+                self.set_theme(aura._system_theme(), _system=True)
+            elif pref in ("light", "dark"):
+                self.set_theme(pref)     # persists via on_theme_change
+
+        # ---- theme: restyle the raw sidebar rows with the flip
+        def set_theme(self, theme, _system=False):
+            super().set_theme(theme, _system=_system)
+            try:
+                self._refresh_source_sidebar()
+            except Exception:
+                pass
+
+        # =================================================================
+        # Sidebar source library (sidebar_body)
+        # =================================================================
+        def _build_source_sidebar(self):
+            aura.SectionLabel(self.sidebar_body, "Sources").pack(
+                anchor="w", padx=6, pady=(0, 4))
+            self._src_frame = ctk.CTkScrollableFrame(
+                self.sidebar_body, fg_color="transparent")
+            self._src_frame.pack(fill="both", expand=True)
+            self._refresh_source_sidebar()
+
+        def _refresh_source_sidebar(self):
+            if not hasattr(self, "_src_frame"):
+                return
+            for w in list(self._src_frame.winfo_children()):
+                try:
+                    w.destroy()
+                except Exception:
+                    pass
+            self._src_rows.clear()
+            sources = index_mod.list_sources()
+            if not sources:
+                aura.Caption(self._src_frame,
+                             "Folders you index appear here.").pack(
+                    anchor="w", padx=6, pady=(2, 0))
+                return
+            pair = aura._pair
+            for name, info in sources:
+                active = (name == self._active_source)
+                n = info.get("count", "?")
+                btn = ctk.CTkButton(
+                    self._src_frame, text=f"{name}   ·  {n}",
+                    anchor="w", height=30,
+                    corner_radius=aura.TOKENS["geometry"]["radius_button"],
+                    fg_color=pair("accent_soft") if active else "transparent",
+                    hover_color=(aura._pal["light"]["surface2"],
+                                 aura._pal["dark"]["surface2"]),
+                    text_color=pair("text") if active else pair("muted"),
+                    font=aura.font(role="body"),
+                    command=lambda nm=name: self._select_source(nm))
+                btn.pack(fill="x", pady=1)
+                aura.Tooltip(btn, info.get("root", ""))
+                self._src_rows[name] = btn
+
+        def _select_source(self, name):
+            self._active_source = name
+            self.source_var.set(name)
+            self._refresh_source_sidebar()
+            self.show("search")
+            self._trigger_search()
+
         # =================================================================
         # Search section
         # =================================================================
         def _build_search(self, frame):
-            bar = ctk.CTkFrame(frame, fg_color="transparent")
-            bar.pack(fill="x", pady=(0, 12))
             self.source_var = tk.StringVar()
-            self.source_combo = aura.AuraCombo(
-                bar, variable=self.source_var, values=[], state="readonly",
-                width=190, command=lambda _v: self._trigger_search())
-            self.source_combo.pack(side="left", padx=(0, 10))
-            # no textvariable: CTkEntry placeholders only work without one
-            self.search_entry = aura.AuraEntry(
-                bar, placeholder="Search names and contents…")
-            self.search_entry.pack(side="left", fill="x", expand=True)
-            self.search_entry.bind("<KeyRelease>", lambda _e: self._on_type())
-            aura.AuraButton(bar, "Manage sources…", kind="ghost",
-                            command=lambda: self.show("sources")).pack(
-                side="left", padx=(10, 0))
+
+            tb = aura.Toolbar(frame)
+            tb.pack(fill="x", pady=(0, 8))
+            tb.add_button("＋ Add source", lambda: self.show("sources"),
+                          kind="primary")
+            self.search_entry = tb.add_search(
+                "Search names and contents…  (Ctrl+F)",
+                on_change=lambda _t: self._trigger_search(), width=340)
+
+            # Spotlight-style type chips on their own row (never squeezed)
+            chiprow = ctk.CTkFrame(frame, fg_color="transparent")
+            chiprow.pack(fill="x", pady=(0, 10))
+            self.chip_seg = aura.SegmentedControl(
+                chiprow, values=list(FILTER_CHIPS), width=480,
+                command=self._set_chip)
+            self.chip_seg.set("All")
+            self.chip_seg.pack(side="left")
 
             body = ctk.CTkFrame(frame, fg_color="transparent")
             body.pack(fill="both", expand=True)
@@ -233,14 +394,20 @@ def build_app():
                 ("modified", "Modified", 130, False),
                 ("snippet", "Match / path", 420, True),
             ):
-                self.tree.heading(cid, text=aura.spaced(label), anchor="w")
+                self.tree.heading(cid, text=aura.spaced(label), anchor="w",
+                                  command=lambda c=cid: self._sort_by(c))
                 self.tree.column(cid, width=width, stretch=stretch, anchor="w")
-            sb = ttk.Scrollbar(body, orient="vertical", command=self.tree.yview)
+            sb = aura.AuraScrollbar(body, command=self.tree.yview)
             self.tree.configure(yscrollcommand=sb.set)
             sb.pack(side="right", fill="y")
             self.tree.pack(side="left", fill="both", expand=True)
             self.tree.bind("<Double-1>", lambda _e: self._open_selected())
             self.tree.bind("<Return>", lambda _e: self._open_selected())
+            self.tree.bind("<Button-3>", self._show_row_menu)
+            self._row_menu = tk.Menu(self, tearoff=0)
+            aura.track(self._row_menu, "menu")
+            self._sort_key = None
+            self._sort_desc = False
 
             aura.AuraButton(self.statusbar.actions, "Open file",
                             kind="secondary", height=30,
@@ -250,37 +417,112 @@ def build_app():
                             command=self._reveal_selected).pack(
                 side="left", padx=(8, 0))
 
+            # empty states: no sources at all / no matches for a query
+            self.empty_sources = aura.EmptyState(
+                frame, title="Nothing indexed yet",
+                caption="Index a folder once, then search file names and "
+                        "contents instantly — everything stays on this "
+                        "device.",
+                action_text="＋ Add a folder",
+                action=lambda: self.show("sources"),
+                image=(asset_path("assets/search-empty-light.png"),
+                       asset_path("assets/search-empty-dark.png")))
+            self.empty_results = aura.EmptyState(
+                body, glyph="⚲", title="No matches",
+                caption="Try fewer words, a different type filter, or "
+                        "re-index the source if files changed (F5).")
+
             self._reload_sources()
+
+        # ---- type-filter chips + column sorting
+        def _set_chip(self, chip):
+            self._chip = chip
+            self._render_results()
+
+        def _sort_by(self, cid):
+            key = {"name": "name", "size": "size", "modified": "mtime"}.get(cid)
+            if key is None:
+                return
+            if self._sort_key == key:
+                self._sort_desc = not self._sort_desc
+            else:
+                self._sort_key, self._sort_desc = key, False
+            self._render_results()
+
+        def _show_row_menu(self, event):
+            iid = self.tree.identify_row(event.y)
+            if not iid:
+                return
+            self.tree.selection_set(iid)
+            r = self._selected_result()
+            if r is None:
+                return
+            m = self._row_menu
+            m.delete(0, "end")
+            m.add_command(label="Open", command=self._open_selected)
+            m.add_command(label="Open containing folder",
+                          command=self._reveal_selected)
+            m.add_separator()
+            m.add_command(label="Copy full path",
+                          command=lambda: self._copy_path(r))
+            aura.style_menu(m)
+            try:
+                m.tk_popup(event.x_root, event.y_root)
+            finally:
+                m.grab_release()
+
+        def _copy_path(self, r):
+            try:
+                self.clipboard_clear()
+                self.clipboard_append(r.get("path") or "")
+                self.set_status("Path copied")
+            except Exception:
+                pass
+
+        def _update_empty_states(self):
+            has_sources = bool(index_mod.list_sources())
+            if has_sources:
+                self.empty_sources.place_forget()
+            else:
+                self.empty_sources.place(relx=0, rely=0.12, relwidth=1,
+                                         relheight=0.85)
+                self.empty_sources.lift()
+            query = self.search_entry.get().strip() \
+                if hasattr(self, "search_entry") else ""
+            if has_sources and query and not self._rows:
+                self.empty_results.place(x=0, y=0, relwidth=1, relheight=1)
+                self.empty_results.lift()
+            else:
+                self.empty_results.place_forget()
 
         # ---- sources plumbing
         def _reload_sources(self):
             names = [name for name, _info in index_mod.list_sources()]
-            self.source_combo.configure(values=names)
             if names and self.source_var.get() not in names:
                 self.source_var.set(names[0])
+                self._active_source = names[0]
             elif not names:
                 self.source_var.set("")
-                self.set_status("No sources yet — open “Sources” to add a "
-                                "folder.")
+                self._active_source = ""
+                self.set_status("No sources yet — add a folder to start "
+                                "searching.")
+            else:
+                self._active_source = self.source_var.get()
+            self._refresh_source_sidebar()
+            self._update_empty_states()
 
-        # ---- as-you-type search (debounced + threaded)
-        def _on_type(self):
-            if self._search_after is not None:
-                try:
-                    self.after_cancel(self._search_after)
-                except Exception:
-                    pass
-            self._search_after = self.after(220, self._trigger_search)
-
+        # ---- as-you-type search (SearchEntry debounces; results threaded)
         def _trigger_search(self):
             self._search_after = None
             name = self.source_var.get().strip()
             query = self.search_entry.get().strip()
             self._clear_results()
             if not name:
+                self._update_empty_states()
                 return
             if not query:
                 self.set_status("Type to search.")
+                self._update_empty_states()
                 return
             self._search_seq += 1
             seq = self._search_seq
@@ -294,11 +536,26 @@ def build_app():
                 except Exception as exc:  # never leak a traceback
                     return None, f"Unexpected error: {exc}"
 
+            # The worker writes its result to an attribute and the MAIN
+            # thread polls for it — calling ``after`` from a worker thread
+            # is unsafe (and raises when the main loop is only pumped).
             def run():
-                res, err = work()
-                self.after(0, lambda: self._show_results(seq, res, err))
+                self._search_done = (seq, *work())
 
+            self._search_done = None
             threading.Thread(target=run, daemon=True).start()
+            if not getattr(self, "_search_polling", False):
+                self._poll_search_result()
+
+        def _poll_search_result(self):
+            done = getattr(self, "_search_done", None)
+            if done is None:            # still waiting on a live search
+                self._search_polling = True
+                self.after(80, self._poll_search_result)
+                return
+            self._search_polling = False
+            self._search_done = None
+            self._show_results(*done)
 
         def _show_results(self, seq, res, err):
             if seq != self._search_seq:
@@ -307,7 +564,22 @@ def build_app():
                 self.set_error(err)
                 return
             self._results = res or []
-            for i, r in enumerate(self._results):
+            self._render_results()
+
+        def _render_results(self):
+            """Apply the type-filter chip + sort order and redraw the rows."""
+            for iid in self.tree.get_children():
+                self.tree.delete(iid)
+            rows = [r for r in self._results
+                    if passes_chip(r.get("name") or "", self._chip)]
+            if self._sort_key:
+                rows.sort(key=lambda r: (r.get(self._sort_key) is None,
+                                         str(r.get(self._sort_key)).lower()
+                                         if self._sort_key == "name"
+                                         else (r.get(self._sort_key) or 0)),
+                          reverse=self._sort_desc)
+            self._rows = rows
+            for i, r in enumerate(rows):
                 snippet = r.get("snippet") or r.get("path") or ""
                 snippet = " ".join(snippet.split())
                 self.tree.insert("", "end", iid=str(i), values=(
@@ -316,12 +588,16 @@ def build_app():
                     fmt_time(r.get("mtime")),
                     snippet,
                 ))
-            n = len(self._results)
-            self.set_status(f"{n} match(es)." if n else "No matches.",
-                            kind="ok" if n else "idle")
+            n, total = len(rows), len(self._results)
+            msg = f"{n} match(es)." if n else "No matches."
+            if n != total:
+                msg = f"{n} of {total} match(es) ({self._chip})."
+            self.set_status(msg, kind="ok" if n else "idle")
+            self._update_empty_states()
 
         def _clear_results(self):
             self._results = []
+            self._rows = []
             for iid in self.tree.get_children():
                 self.tree.delete(iid)
 
@@ -330,7 +606,7 @@ def build_app():
             if not sel:
                 return None
             try:
-                return self._results[int(sel[0])]
+                return self._rows[int(sel[0])]
             except (ValueError, IndexError):
                 return None
 
@@ -383,7 +659,7 @@ def build_app():
             self._prog.pack(fill="x", pady=(10, 4))
             self._prog_lbl = aura.Caption(add.body, "")
             self._prog_lbl.pack(anchor="w")
-            self._index_btn = aura.AuraButton(add.body, "Add & index",
+            self._index_btn = aura.AuraButton(add.body, "＋ Add & index",
                                               command=self._do_index)
             self._index_btn.pack(anchor="w", pady=(8, 0))
 

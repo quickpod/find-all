@@ -24,6 +24,7 @@ jobs:
           --add-data "find-all.ico;."
           --collect-submodules whoosh
           --collect-all customtkinter
+          --add-data "assets;assets"
           find_all_app.py
       - name: Stage installer inputs
         shell: pwsh
